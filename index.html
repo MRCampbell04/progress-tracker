@@ -809,11 +809,13 @@ function fromFS(d,b){return{...b,username:d.profile?.username??b.username,bio:d.
 // ═══════════════════════════════════════════════════════════
 // SYNC
 // ═══════════════════════════════════════════════════════════
-let syncT=null;
+let syncT=null,cloudUnsub=null,applyingRemote=false;
 function setSS(st,msg=''){const d=$('sync-dot'),l=$('sync-status');if(!d)return;d.className='sync-dot'+(st==='syncing'?' syncing':st==='error'?' error':'');if(l){l.textContent=st==='syncing'?'Syncing…':st==='error'?'Error':st==='local'?'Local':'Synced';l.title=msg||lastSyncError||'';}}
-function save(){lsSave();if(!canCloudSync())return;setSS('syncing');clearTimeout(syncT);syncT=setTimeout(async()=>{try{await withTimeout(fb.setDoc(fb.doc(db,'users',UID),toFS(S),{merge:true}),CLOUD_TIMEOUT,'Cloud save');lastSyncError='';setSS('synced');}catch(e){lastSyncError=syncErr(e);console.error(e);setSS('local',lastSyncError);}},2500);}
-async function pullCloud(){if(!canCloudSync())return false;try{const ref=fb.doc(db,'users',UID);const sn=await withTimeout(fb.getDoc(ref),CLOUD_TIMEOUT,'Cloud load');if(sn.exists()){const c=fromFS(sn.data(),S);const ci=new Set((c.tasks||[]).map(t=>t.id));c.tasks=[...(c.tasks||[]),...S.tasks.filter(t=>!ci.has(t.id))];S=c;}else{await withTimeout(fb.setDoc(ref,toFS(S),{merge:true}),CLOUD_TIMEOUT,'Initial cloud save');}lastSyncError='';lsSave();return true;}catch(e){lastSyncError=syncErr(e);console.error(e);setSS('local',lastSyncError);return false;}}
-async function manualSync(){if(!UID){showNotif('Offline','Offline','Sign in to sync.');return;}if(!firebaseReady){const ok=await initFirebase();if(!ok){showNotif('Sync','Sync unavailable',lastSyncError||'Using local storage for now.');return;}}setSS('syncing');try{await withTimeout(fb.setDoc(fb.doc(db,'users',UID),toFS(S),{merge:true}),CLOUD_TIMEOUT,'Manual sync');lastSyncError='';setSS('synced');showNotif('Sync','Synced!','Progress saved.');}catch(e){lastSyncError=syncErr(e);setSS('error',lastSyncError);showNotif('Sync','Sync Failed',lastSyncError);}}
+function save(){lsSave();if(applyingRemote||!canCloudSync())return;setSS('syncing');clearTimeout(syncT);syncT=setTimeout(async()=>{try{await withTimeout(fb.setDoc(fb.doc(db,'users',UID),toFS(S),{merge:true}),CLOUD_TIMEOUT,'Cloud save');lastSyncError='';setSS('synced');}catch(e){lastSyncError=syncErr(e);console.error(e);setSS('local',lastSyncError);}},2500);}
+function mergeCloudData(data){const c=fromFS(data,S);const ci=new Set((c.tasks||[]).map(t=>t.id));c.tasks=[...(c.tasks||[]),...S.tasks.filter(t=>!ci.has(t.id))];S=c;lsSave();}
+async function pullCloud(){if(!canCloudSync())return false;try{const ref=fb.doc(db,'users',UID);const sn=await withTimeout(fb.getDoc(ref),CLOUD_TIMEOUT,'Cloud load');if(sn.exists())mergeCloudData(sn.data());else await withTimeout(fb.setDoc(ref,toFS(S),{merge:true}),CLOUD_TIMEOUT,'Initial cloud save');lastSyncError='';return true;}catch(e){lastSyncError=syncErr(e);console.error(e);setSS('local',lastSyncError);return false;}}
+function startCloudListener(){if(cloudUnsub){cloudUnsub();cloudUnsub=null;}if(!canCloudSync()||!fb.onSnapshot)return;const ref=fb.doc(db,'users',UID);cloudUnsub=fb.onSnapshot(ref,sn=>{if(!sn.exists())return;applyingRemote=true;try{mergeCloudData(sn.data());applyTheme(S.theme,S.darkMode,false);renderAll();updateAuthUI(auth?.currentUser||null);lastSyncError='';setSS('synced');}finally{applyingRemote=false;}},e=>{lastSyncError=syncErr(e);console.error(e);setSS('local',lastSyncError);});}
+async function manualSync(){if(!UID){showNotif('Offline','Offline','Sign in to sync.');return;}if(!firebaseReady){const ok=await initFirebase();if(!ok){showNotif('Sync','Sync unavailable',lastSyncError||'Using local storage for now.');return;}}setSS('syncing');try{await pullCloud();await withTimeout(fb.setDoc(fb.doc(db,'users',UID),toFS(S),{merge:true}),CLOUD_TIMEOUT,'Manual sync');startCloudListener();lastSyncError='';setSS('synced');showNotif('Sync','Synced!','Progress saved.');}catch(e){lastSyncError=syncErr(e);setSS('error',lastSyncError);showNotif('Sync','Sync Failed',lastSyncError);}}
 window.manualSync=manualSync;
 
 // ═══════════════════════════════════════════════════════════
@@ -830,7 +832,7 @@ async function initFirebase(){
         import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js'),
         import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js')
       ]),FB_TIMEOUT,'Firebase startup');
-      fb={initializeApp:appMod.initializeApp,getAuth:authMod.getAuth,GoogleAuthProvider:authMod.GoogleAuthProvider,signInWithPopup:authMod.signInWithPopup,fbSignOut:authMod.signOut,onAuthStateChanged:authMod.onAuthStateChanged,getFirestore:fsMod.getFirestore,doc:fsMod.doc,getDoc:fsMod.getDoc,setDoc:fsMod.setDoc,serverTimestamp:fsMod.serverTimestamp};
+      fb={initializeApp:appMod.initializeApp,getAuth:authMod.getAuth,GoogleAuthProvider:authMod.GoogleAuthProvider,signInWithPopup:authMod.signInWithPopup,fbSignOut:authMod.signOut,onAuthStateChanged:authMod.onAuthStateChanged,getFirestore:fsMod.getFirestore,doc:fsMod.doc,getDoc:fsMod.getDoc,setDoc:fsMod.setDoc,onSnapshot:fsMod.onSnapshot,serverTimestamp:fsMod.serverTimestamp};
       app=fb.initializeApp(FB);auth=fb.getAuth(app);db=fb.getFirestore(app);gp=new fb.GoogleAuthProvider();firebaseReady=true;
       fb.onAuthStateChanged(auth,user=>handleAuthState(user));
       return true;
@@ -845,11 +847,11 @@ async function handleAuthState(user){
     UID=user.uid;setSS('syncing');
     const cloudReady=await pullCloud();
     if(S.username==='Student Hero'&&user.displayName)S.username=user.displayName;
-    applyTheme(S.theme,S.darkMode);renderAll();updateAuthUI(user);setSS(cloudReady?'synced':'local');showWelcome(S.username);
-  }else{UID=null;updateAuthUI(null);}
+    applyTheme(S.theme,S.darkMode,false);renderAll();updateAuthUI(user);setSS(cloudReady?'synced':'local');startCloudListener();showWelcome(S.username);
+  }else{if(cloudUnsub){cloudUnsub();cloudUnsub=null;}UID=null;updateAuthUI(null);}
 }
 async function doSignIn(){if(!firebaseReady){const ok=await initFirebase();if(!ok){showNotif('Auth','Sign-in unavailable','Using local storage for now.');return;}}try{await fb.signInWithPopup(auth,gp);}catch(e){showNotif('Auth','Sign-in failed',e.code||'Try again.');}}
-async function doSignOut(){clearTimeout(syncT);try{if(firebaseReady&&auth)await fb.fbSignOut(auth);}catch(e){console.error(e);}UID=null;updateAuthUI(null);showNotif('Auth','Signed out','Data saved locally.');}
+async function doSignOut(){clearTimeout(syncT);if(cloudUnsub){cloudUnsub();cloudUnsub=null;}try{if(firebaseReady&&auth)await fb.fbSignOut(auth);}catch(e){console.error(e);}UID=null;updateAuthUI(null);showNotif('Auth','Signed out','Data saved locally.');}
 window.doSignIn=doSignIn;window.doSignOut=doSignOut;
 
 function updateAuthUI(user){
@@ -886,7 +888,7 @@ function showWelcome(name){
 // ═══════════════════════════════════════════════════════════
 // THEMES
 // ═══════════════════════════════════════════════════════════
-function applyTheme(id,dark){
+function applyTheme(id,dark,persist=true){
   S.theme=id||'cyber';S.darkMode=dark!==false;
   const t=THEMES[S.theme]||THEMES.cyber;
   const allCls=Object.values(THEMES).flatMap(x=>[x.dk,x.lt]).filter(Boolean);
@@ -896,7 +898,7 @@ function applyTheme(id,dark){
   const dt=$('dark-track'),dl=$('dark-label');
   if(dt)dt.className='toggle-track'+(S.darkMode?' on':'');
   if(dl)dl.textContent=S.darkMode?'Dark':'Light';
-  save();
+  if(persist)save();
 }
 function toggleDarkMode(){applyTheme(S.theme,!S.darkMode);renderAll();}
 window.toggleDarkMode=toggleDarkMode;

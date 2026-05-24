@@ -815,7 +815,7 @@ function save(){lsSave();if(applyingRemote||!canCloudSync())return;setSS('syncin
 function mergeCloudData(data){const c=fromFS(data,S);const ci=new Set((c.tasks||[]).map(t=>t.id));c.tasks=[...(c.tasks||[]),...S.tasks.filter(t=>!ci.has(t.id))];S=c;lsSave();}
 async function pullCloud(){if(!canCloudSync())return false;try{const ref=fb.doc(db,'users',UID);const sn=await withTimeout(fb.getDoc(ref),CLOUD_TIMEOUT,'Cloud load');if(sn.exists())mergeCloudData(sn.data());else await withTimeout(fb.setDoc(ref,toFS(S),{merge:true}),CLOUD_TIMEOUT,'Initial cloud save');lastSyncError='';return true;}catch(e){lastSyncError=syncErr(e);console.error(e);setSS('local',lastSyncError);return false;}}
 function startCloudListener(){if(cloudUnsub){cloudUnsub();cloudUnsub=null;}if(!canCloudSync()||!fb.onSnapshot)return;const ref=fb.doc(db,'users',UID);cloudUnsub=fb.onSnapshot(ref,sn=>{if(!sn.exists())return;applyingRemote=true;try{mergeCloudData(sn.data());applyTheme(S.theme,S.darkMode,false);renderAll();updateAuthUI(auth?.currentUser||null);lastSyncError='';setSS('synced');}finally{applyingRemote=false;}},e=>{lastSyncError=syncErr(e);console.error(e);setSS('local',lastSyncError);});}
-async function manualSync(){if(!UID){showNotif('Offline','Offline','Sign in to sync.');return;}if(!firebaseReady){const ok=await initFirebase();if(!ok){showNotif('Sync','Sync unavailable',lastSyncError||'Using local storage for now.');return;}}setSS('syncing');try{await pullCloud();await withTimeout(fb.setDoc(fb.doc(db,'users',UID),toFS(S),{merge:true}),CLOUD_TIMEOUT,'Manual sync');startCloudListener();lastSyncError='';setSS('synced');showNotif('Sync','Synced!','Progress saved.');}catch(e){lastSyncError=syncErr(e);setSS('error',lastSyncError);showNotif('Sync','Sync Failed',lastSyncError);}}
+async function manualSync(){if(!UID){showNotif('Offline','Offline','Sign in to sync.');return;}if(!firebaseReady){const ok=await initFirebase();if(!ok){showNotif('Sync','Sync unavailable',lastSyncError||'Using local storage for now.');return;}}setSS('syncing');try{const pulled=await pullCloud();if(!pulled)throw new Error(lastSyncError||'Cloud pull failed');await withTimeout(fb.setDoc(fb.doc(db,'users',UID),toFS(S),{merge:true}),CLOUD_TIMEOUT,'Manual sync');startCloudListener();lastSyncError='';setSS('synced');showNotif('Sync','Synced!','Progress saved.');}catch(e){lastSyncError=syncErr(e);setSS('error',lastSyncError);showNotif('Sync','Sync Failed',lastSyncError);}}
 window.manualSync=manualSync;
 
 // ═══════════════════════════════════════════════════════════
@@ -832,8 +832,10 @@ async function initFirebase(){
         import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js'),
         import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js')
       ]),FB_TIMEOUT,'Firebase startup');
-      fb={initializeApp:appMod.initializeApp,getAuth:authMod.getAuth,GoogleAuthProvider:authMod.GoogleAuthProvider,signInWithPopup:authMod.signInWithPopup,fbSignOut:authMod.signOut,onAuthStateChanged:authMod.onAuthStateChanged,getFirestore:fsMod.getFirestore,doc:fsMod.doc,getDoc:fsMod.getDoc,setDoc:fsMod.setDoc,onSnapshot:fsMod.onSnapshot,serverTimestamp:fsMod.serverTimestamp};
-      app=fb.initializeApp(FB);auth=fb.getAuth(app);db=fb.getFirestore(app);gp=new fb.GoogleAuthProvider();firebaseReady=true;
+      fb={initializeApp:appMod.initializeApp,getAuth:authMod.getAuth,GoogleAuthProvider:authMod.GoogleAuthProvider,signInWithPopup:authMod.signInWithPopup,fbSignOut:authMod.signOut,onAuthStateChanged:authMod.onAuthStateChanged,getFirestore:fsMod.getFirestore,initializeFirestore:fsMod.initializeFirestore,doc:fsMod.doc,getDoc:fsMod.getDoc,setDoc:fsMod.setDoc,onSnapshot:fsMod.onSnapshot,serverTimestamp:fsMod.serverTimestamp};
+      app=fb.initializeApp(FB);auth=fb.getAuth(app);
+      db=fb.initializeFirestore?fb.initializeFirestore(app,{experimentalAutoDetectLongPolling:true,ignoreUndefinedProperties:true}):fb.getFirestore(app);
+      gp=new fb.GoogleAuthProvider();firebaseReady=true;
       fb.onAuthStateChanged(auth,user=>handleAuthState(user));
       return true;
     }catch(e){

@@ -1112,7 +1112,7 @@ function renderRecent(){
 }
 
 // ── Desktop add-btn visibility ───────────────────────────────
-function syncDesktopBtn(){const btn=$('desktop-add-btn');if(btn)btn.style.display=window.innerWidth>=768?'flex':'none';}
+function syncDesktopBtn(){const btn=document.getElementById('desktop-add-btn');if(btn)btn.style.display=window.innerWidth>=768?'flex':'none';}
 window.addEventListener('resize',()=>{syncDesktopBtn();updateProfile();});
 syncDesktopBtn();
 
